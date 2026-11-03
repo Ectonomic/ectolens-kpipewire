@@ -221,6 +221,13 @@ bool PipeWireRecordProduce::setupFormat()
     if (codecId == AV_CODEC_ID_GIF || codecId == AV_CODEC_ID_WEBP) {
         av_dict_set_int(&options, "loop", 0, 0);
     }
+    // Ectolens: MP4 and MOV are written in fragments while recording, so a crash
+    // still leaves a playable file, and FFmpeg turns them into a normal file when
+    // the recording finishes (the method OBS calls Hybrid MP4).
+    const QByteArray formatName = m_avFormatContext->oformat->name;
+    if (formatName.contains("mp4") || formatName.contains("mov")) {
+        av_dict_set(&options, "movflags", "+hybrid_fragmented", 0);
+    }
     ret = avformat_write_header(m_avFormatContext, &options);
     if (ret < 0) {
         qCWarning(PIPEWIRERECORD_LOGGING) << "Error occurred when writing header:" << av_err2str(ret);

@@ -110,6 +110,8 @@ public:
 
     void setColorRange(PipeWireBaseEncodedStream::ColorRange colorRange);
 
+    void setEncoderSettings(const PipeWireBaseEncodedStream::EncoderSettings &settings);
+
 protected:
     virtual AVDictionary *buildEncodingOptions();
     void maybeLogOptions(AVDictionary *options);
@@ -126,6 +128,7 @@ protected:
     std::optional<quint8> m_quality;
     PipeWireBaseEncodedStream::EncodingPreference m_encodingPreference;
     PipeWireBaseEncodedStream::ColorRange m_colorRange = PipeWireBaseEncodedStream::ColorRange::Limited;
+    PipeWireBaseEncodedStream::EncoderSettings m_settings;
 };
 
 /**

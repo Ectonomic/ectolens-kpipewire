@@ -7,6 +7,9 @@
 */
 
 #include "pipewiresourcestream.h"
+
+#include <cstdlib>
+#include <cstring>
 #include "glhelpers.h"
 #include "logging.h"
 #include "pipewirecore_p.h"
@@ -395,7 +398,10 @@ PipeWireFrameData::PipeWireFrameData(spa_video_format format, void *data, QSize 
     , stride(stride)
     , cleanup(cleanup)
 {
-    cleanup->ref();
+    // Ectolens: a frame may come without a cleanup function; don't touch it then.
+    if (cleanup) {
+        cleanup->ref();
+    }
 }
 
 PipeWireFrameData::~PipeWireFrameData()
@@ -763,11 +769,23 @@ void PipeWireSourceStream::handleFrame(struct pw_buffer *buffer)
         if (spaBuffer->datas->chunk->size == 0) {
             qCDebug(PIPEWIRE_LOGGING) << "skipping empty memptr buffer";
         } else {
+            // Ectolens: the buffer goes back to the producer as soon as this
+            // returns, while the encoder reads the frame later on its own
+            // thread, so the frame keeps its own copy of the pixels.
+            const auto &chunk = *spaBuffer->datas->chunk;
+            auto *copy = static_cast<uint8_t *>(malloc(chunk.size));
+            if (!copy) {
+                qCWarning(PIPEWIRE_LOGGING) << "Could not copy a memptr frame of" << chunk.size << "bytes";
+                return;
+            }
+            memcpy(copy, static_cast<const uint8_t *>(spaBuffer->datas->data) + chunk.offset, chunk.size);
             frame.dataFrame = std::make_shared<PipeWireFrameData>(d->videoFormat.format,
-                                                                  spaBuffer->datas->data,
+                                                                  copy,
                                                                   QSize(d->videoFormat.size.width, d->videoFormat.size.height),
-                                                                  spaBuffer->datas->chunk->stride,
-                                                                  nullptr);
+                                                                  chunk.stride,
+                                                                  new PipeWireFrameCleanupFunction([copy]() {
+                                                                      free(copy);
+                                                                  }));
         }
     } else {
         if (spaBuffer->datas->type == SPA_ID_INVALID) {

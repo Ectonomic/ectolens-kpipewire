@@ -9,6 +9,8 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavutil/mem.h>
+#include <libavutil/opt.h>
 }
 
 #include "encoder_p.h"
@@ -19,6 +21,7 @@ extern "C" {
 #include "libvpxvp9encoder_p.h"
 #include "libwebpencoder_p.h"
 #include "libx264encoder_p.h"
+#include "namedencoder_p.h"
 #include "pipewirebaseencodedstream.h"
 #include "pipewireproduce_p.h"
 #include "vaapiutils_p.h"
@@ -50,6 +53,19 @@ public:
     bool frameStateCleared() const
     {
         return m_pendingFilterFrames == 0 && m_pendingEncodeFrames == 0;
+    }
+};
+
+// A produce at 60 frames per second, for checking settings that depend on the rate.
+class SixtyProduce : public PipeWireProduce
+{
+public:
+    SixtyProduce()
+        : PipeWireProduce(PipeWireBaseEncodedStream::Encoder::NoEncoder, 0, 0, 0, Fraction{.numerator = 60, .denominator = 1})
+    {
+    }
+    void processPacket([[maybe_unused]] AVPacket *packet) override
+    {
     }
 };
 
@@ -104,6 +120,144 @@ private Q_SLOTS:
         }
 
         QVERIFY(encoder->initialize(QSize(512, 512)));
+    }
+
+    // Ectolens: every explicit setting reaches x264 as given.
+    void testX264ExplicitSettings_data()
+    {
+        QTest::addColumn<bool>("fullColor");
+        QTest::addRow("4:2:0") << false;
+        QTest::addRow("4:4:4") << true;
+    }
+
+    void testX264ExplicitSettings()
+    {
+        QFETCH(bool, fullColor);
+        if (!avcodec_find_encoder_by_name("libx264")) {
+            QSKIP("Skipping because libx264 was not found");
+        }
+        SixtyProduce produce;
+        PipeWireBaseEncodedStream::EncoderSettings settings;
+        settings.qualityLevel = 16;
+        settings.speedPreset = u"faster"_s;
+        settings.keyframeIntervalSeconds = 2;
+        settings.bFrames = 2;
+        settings.fullColor = fullColor;
+        settings.extraOptions = u"aq-mode=3"_s;
+        LibX264Encoder encoder(Encoder::H264Profile::Main, &produce);
+        encoder.setEncoderSettings(settings);
+        QVERIFY(encoder.initialize(QSize(640, 360)));
+
+        AVCodecContext *context = encoder.avCodecContext();
+        QCOMPARE(context->gop_size, 120);
+        QCOMPARE(context->max_b_frames, 2);
+        QCOMPARE(context->pix_fmt, fullColor ? AV_PIX_FMT_YUV444P : AV_PIX_FMT_YUV420P);
+        QCOMPARE(context->profile, fullColor ? AV_PROFILE_H264_HIGH_444_PREDICTIVE : AV_PROFILE_H264_HIGH);
+
+        double crf = 0;
+        QCOMPARE(av_opt_get_double(context, "crf", AV_OPT_SEARCH_CHILDREN, &crf), 0);
+        QCOMPARE(crf, 16.0);
+        uint8_t *value = nullptr;
+        QCOMPARE(av_opt_get(context, "preset", AV_OPT_SEARCH_CHILDREN, &value), 0);
+        QCOMPARE(QByteArray(reinterpret_cast<char *>(value)), "faster"_ba);
+        av_freep(&value);
+        QCOMPARE(av_opt_get(context, "x264-params", AV_OPT_SEARCH_CHILDREN, &value), 0);
+        QVERIFY(QByteArray(reinterpret_cast<char *>(value)).contains("aq-mode=3"));
+        av_freep(&value);
+    }
+
+    // Ectolens: encoders chosen by name open with the settings translated into
+    // their own options. NVENC rows touch the graphics card, so they only run
+    // when ECTOLENS_GPU_TESTS=1 (the owner's GPU waits for his word).
+    void testNamedEncoder_data()
+    {
+        QTest::addColumn<QString>("name");
+        QTest::addColumn<QByteArray>("qualityOption");
+        QTest::addColumn<bool>("fullColor");
+        QTest::addColumn<bool>("gpu");
+        QTest::addRow("libx265") << u"libx265"_s << "crf"_ba << false << false;
+        QTest::addRow("libx265 4:4:4") << u"libx265"_s << "crf"_ba << true << false;
+        QTest::addRow("libsvtav1") << u"libsvtav1"_s << "crf"_ba << false << false;
+        QTest::addRow("h264_nvenc") << u"h264_nvenc"_s << "cq"_ba << false << true;
+        QTest::addRow("h264_nvenc 4:4:4") << u"h264_nvenc"_s << "cq"_ba << true << true;
+        QTest::addRow("hevc_nvenc") << u"hevc_nvenc"_s << "cq"_ba << false << true;
+    }
+
+    void testNamedEncoder()
+    {
+        QFETCH(QString, name);
+        QFETCH(QByteArray, qualityOption);
+        QFETCH(bool, fullColor);
+        QFETCH(bool, gpu);
+        if (gpu && qEnvironmentVariable("ECTOLENS_GPU_TESTS") != u"1") {
+            QSKIP("GPU test: set ECTOLENS_GPU_TESTS=1 to run it");
+        }
+        if (!avcodec_find_encoder_by_name(name.toUtf8().constData())) {
+            QSKIP("Skipping because the encoder is not in this FFmpeg build");
+        }
+        SixtyProduce produce;
+        PipeWireBaseEncodedStream::EncoderSettings settings;
+        settings.qualityLevel = 20;
+        settings.keyframeIntervalSeconds = 2;
+        settings.fullColor = fullColor;
+        NamedEncoder encoder(name, &produce);
+        encoder.setEncoderSettings(settings);
+        QVERIFY(encoder.initialize(QSize(640, 360)));
+        AVCodecContext *context = encoder.avCodecContext();
+        QCOMPARE(context->gop_size, 120);
+        QCOMPARE(context->pix_fmt, fullColor ? AV_PIX_FMT_YUV444P : AV_PIX_FMT_YUV420P);
+        int64_t quality = -1;
+        QCOMPARE(av_opt_get_int(context, qualityOption.constData(), AV_OPT_SEARCH_CHILDREN, &quality), 0);
+        QCOMPARE(quality, 20);
+    }
+
+    void testFullColorFallsBackWhereUnsupported()
+    {
+        if (!avcodec_find_encoder_by_name("libsvtav1")) {
+            QSKIP("Skipping because libsvtav1 is not in this FFmpeg build");
+        }
+        SixtyProduce produce;
+        PipeWireBaseEncodedStream::EncoderSettings settings;
+        settings.fullColor = true;
+        NamedEncoder encoder(u"libsvtav1"_s, &produce);
+        encoder.setEncoderSettings(settings);
+        QVERIFY(encoder.initialize(QSize(640, 360)));
+        QCOMPARE(encoder.avCodecContext()->pix_fmt, AV_PIX_FMT_YUV420P);
+    }
+
+    // Ectolens: the speed check encodes with the real settings and reports a factor.
+    void testSpeedCheck()
+    {
+        if (!avcodec_find_encoder_by_name("libx264")) {
+            QSKIP("Skipping because libx264 was not found");
+        }
+        PipeWireBaseEncodedStream::EncoderSettings settings;
+        settings.encoderName = u"libx264"_s;
+        settings.qualityLevel = 16;
+        settings.speedPreset = u"veryfast"_s;
+        const auto check = PipeWireBaseEncodedStream::checkEncodingSpeed(settings, QSize(640, 360), Fraction{60, 1}, 60);
+        QVERIFY2(check.ok, qPrintable(check.error));
+        QVERIFY(check.realtimeFactor > 0);
+        QVERIFY(check.bytes > 0);
+
+        settings.encoderName = u"no_such_encoder"_s;
+        const auto bad = PipeWireBaseEncodedStream::checkEncodingSpeed(settings, QSize(640, 360), Fraction{60, 1}, 10);
+        QVERIFY(!bad.ok);
+        QVERIFY(!bad.error.isEmpty());
+    }
+
+    // Without explicit settings the encoder keeps KPipeWire's own behavior.
+    void testX264WithoutSettings()
+    {
+        if (!avcodec_find_encoder_by_name("libx264")) {
+            QSKIP("Skipping because libx264 was not found");
+        }
+        SixtyProduce produce;
+        LibX264Encoder encoder(Encoder::H264Profile::Main, &produce);
+        QVERIFY(encoder.initialize(QSize(640, 360)));
+        QCOMPARE(encoder.avCodecContext()->gop_size, 100);
+        QCOMPARE(encoder.avCodecContext()->max_b_frames, 0);
+        QCOMPARE(encoder.avCodecContext()->profile, AV_PROFILE_H264_MAIN);
     }
 
     // A mid-stream source resize is handled by PipeWireProduce::reconfigureStream(),

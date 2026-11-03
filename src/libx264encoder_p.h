@@ -24,6 +24,7 @@ public:
 
 protected:
     AVDictionary *buildEncodingOptions() override;
+    bool hasExplicitSettings() const;
 
 private:
     H264Profile m_profile = H264Profile::Main;

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <QObject>
+#include <atomic>
 #include <epoxy/egl.h>
 
 extern "C" {
@@ -161,6 +162,11 @@ public:
 
     void setColorRange(PipeWireBaseEncodedStream::ColorRange colorRange);
 
+    void setEncoderSettings(const PipeWireBaseEncodedStream::EncoderSettings &settings);
+
+    /// Ectolens: counts a frame lost because encoding fell behind (any thread).
+    void frameDropped();
+
     void handleEncodedFramesChanged();
 
     const uint m_nodeId;
@@ -206,6 +212,8 @@ public:
     std::chrono::steady_clock::time_point recordEpoch();
 
     std::optional<std::chrono::steady_clock::time_point> m_recordEpoch;
+    std::optional<std::chrono::steady_clock::time_point> m_pausedAt; // Ectolens: set while paused
+    std::atomic<int> m_droppedFrames = 0; // Ectolens: frames lost because encoding fell behind
 
     uint m_fd;
     Fraction m_frameRate;
@@ -215,6 +223,7 @@ public:
 
     PipeWireBaseEncodedStream::EncodingPreference m_encodingPreference;
     PipeWireBaseEncodedStream::ColorRange m_colorRange = PipeWireBaseEncodedStream::ColorRange::Limited;
+    PipeWireBaseEncodedStream::EncoderSettings m_encoderSettings;
 
     struct {
         QImage texture;
@@ -238,6 +247,7 @@ public:
     std::atomic_bool m_deactivated = false;
 
     int64_t m_previousPts = -1;
+    double m_nextFrameDue = 0; // Ectolens: when the next frame is due, in the same milliseconds as framePts()
 
     std::atomic_int m_pendingFilterFrames = 0;
     std::atomic_int m_pendingEncodeFrames = 0;
@@ -263,6 +273,8 @@ Q_SIGNALS:
     void producedFrames();
     void started();
     void finished();
+    /// Ectolens: the running count of frames lost because encoding fell behind.
+    void droppedFramesChanged(int count);
     // Emitted when the encoder fails to start or stops producing output. Forwarded by
     // PipeWireBaseEncodedStream as errorFound() so consumers can fall back gracefully.
     void encodingError(const QString &message);

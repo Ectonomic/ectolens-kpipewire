@@ -6,6 +6,8 @@ ecm_add_test(TEST_NAME TestEncoder
     ${CMAKE_SOURCE_DIR}/src/gifencoder.cpp
     ${CMAKE_SOURCE_DIR}/src/h264vaapiencoder.cpp
     ${CMAKE_SOURCE_DIR}/src/libx264encoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/namedencoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/speedcheck.cpp
     ${CMAKE_SOURCE_DIR}/src/libopenh264encoder.cpp
     ${CMAKE_SOURCE_DIR}/src/libvpxencoder.cpp
     ${CMAKE_SOURCE_DIR}/src/libvpxvp9encoder.cpp
@@ -52,6 +54,8 @@ ecm_add_test(TEST_NAME TestAudioEncoder
     ${CMAKE_SOURCE_DIR}/src/gifencoder.cpp
     ${CMAKE_SOURCE_DIR}/src/h264vaapiencoder.cpp
     ${CMAKE_SOURCE_DIR}/src/libx264encoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/namedencoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/speedcheck.cpp
     ${CMAKE_SOURCE_DIR}/src/libopenh264encoder.cpp
     ${CMAKE_SOURCE_DIR}/src/libvpxencoder.cpp
     ${CMAKE_SOURCE_DIR}/src/libvpxvp9encoder.cpp

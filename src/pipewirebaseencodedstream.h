@@ -31,6 +31,8 @@ class KPIPEWIRE_EXPORT PipeWireBaseEncodedStream : public QObject
     Q_PROPERTY(bool active READ isActive NOTIFY activeChanged)
     Q_PROPERTY(State state READ state NOTIFY stateChanged)
     Q_PROPERTY(Encoder encoder READ encoder WRITE setEncoder NOTIFY encoderChanged)
+    /// Ectolens: frames lost because encoding fell behind, since start().
+    Q_PROPERTY(int droppedFrames READ droppedFrames NOTIFY droppedFramesChanged)
 
 public:
     enum Encoder {
@@ -194,6 +196,47 @@ public:
     Q_ENUM(ColorRange)
     void setColorRange(ColorRange colorRange);
 
+    /**
+     * Exact encoder settings (Ectolens). Each value that is set overrides what
+     * setQuality() and setEncodingPreference() would choose; unset values keep
+     * the encoder's own defaults. Values are in the encoder's own terms.
+     */
+    struct EncoderSettings {
+        /// The encoder's own quality scale, lower is sharper (x264: crf).
+        std::optional<qreal> qualityLevel;
+        /// The encoder's own speed preset name (x264: "veryfast").
+        QString speedPreset;
+        /// Seconds between keyframes.
+        std::optional<qreal> keyframeIntervalSeconds;
+        /// Number of B-frames.
+        std::optional<int> bFrames;
+        /// Full color detail (4:4:4) instead of 4:2:0.
+        bool fullColor = false;
+        /// Extra options in the encoder's own syntax (x264: "key=value:key=value").
+        QString extraOptions;
+        /// The FFmpeg encoder to use ("libx264", "libx265", "libsvtav1", "h264_nvenc",
+        /// "hevc_nvenc", "av1_nvenc"). Empty keeps the choice made by setEncoder().
+        QString encoderName;
+    };
+    void setEncoderSettings(const EncoderSettings &settings);
+    EncoderSettings encoderSettings() const;
+    /// The encoders EncoderSettings::encoderName accepts that open on this computer,
+    /// found by opening each one on a small test size. Hardware encoders are tried
+    /// too, so this touches the graphics card.
+    static QStringList availableEncoderNames(bool includeHardware = true);
+
+    /// Ectolens: how fast this computer encodes with these settings, measured
+    /// on a moving test picture of the given size (no screen involved).
+    struct SpeedCheck {
+        bool ok = false;
+        /// Encoded seconds of video per second of work: 1.0 keeps up exactly.
+        double realtimeFactor = 0;
+        qint64 bytes = 0;
+        QString error;
+    };
+    static SpeedCheck checkEncodingSpeed(const EncoderSettings &settings, const QSize &size, const Fraction &fps, int frames = 120);
+    int droppedFrames() const;
+
 Q_SIGNALS:
     void activeChanged(bool active);
     void nodeIdChanged(uint nodeId);
@@ -203,6 +246,7 @@ Q_SIGNALS:
     void maxPendingFramesChanged();
     void stateChanged();
     void encoderChanged();
+    void droppedFramesChanged();
     void objectSerialChanged();
 
 protected:

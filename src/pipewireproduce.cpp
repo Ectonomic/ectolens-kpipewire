@@ -28,6 +28,7 @@
 #include "libvpxvp9encoder_p.h"
 #include "libwebpencoder_p.h"
 #include "libx264encoder_p.h"
+#include "namedencoder_p.h"
 #include "pipewireaudiosourcestream_p.h"
 
 #include "logging_frame_statistics.h"
@@ -78,6 +79,7 @@ PipeWireProduce::PipeWireProduce(PipeWireBaseEncodedStream::Encoder encoderType,
     , m_encoderType(encoderType)
     , m_fd(fd)
     , m_frameRate(framerate)
+    , m_maxFramerate(framerate) // Ectolens: pacing and the encoder use the rate the stream was started with, not a fixed 60
 {
     qRegisterMetaType<std::optional<int>>();
     qRegisterMetaType<std::optional<std::chrono::nanoseconds>>();
@@ -442,6 +444,10 @@ std::chrono::steady_clock::time_point PipeWireProduce::recordEpoch()
 
 void PipeWireProduce::processAudioFrame(int input, const PipeWireAudioFrame &frame)
 {
+    // Ectolens: sound stops with the picture while paused.
+    if (m_pausedAt) {
+        return;
+    }
     auto &state = m_audioInputStates[input];
     if (state.ended) {
         return;
@@ -607,6 +613,19 @@ void PipeWireProduce::setStreamActive(bool active)
         return;
     }
 
+    // Ectolens: a pause is cut out of the file, the way OBS does it. Every
+    // timestamp, video and sound, is measured from the record epoch, so moving
+    // the epoch forward by the paused time closes the gap for both.
+    const auto now = std::chrono::steady_clock::now();
+    if (!active && !m_pausedAt) {
+        m_pausedAt = now;
+    } else if (active && m_pausedAt) {
+        if (m_recordEpoch) {
+            *m_recordEpoch += now - *m_pausedAt;
+        }
+        m_pausedAt.reset();
+    }
+
     m_stream->setActive(active);
 }
 
@@ -688,6 +707,19 @@ void PipeWireProduce::setEncodingPreference(const PipeWireBaseEncodedStream::Enc
     }
 }
 
+void PipeWireProduce::frameDropped()
+{
+    Q_EMIT droppedFramesChanged(++m_droppedFrames);
+}
+
+void PipeWireProduce::setEncoderSettings(const PipeWireBaseEncodedStream::EncoderSettings &settings)
+{
+    m_encoderSettings = settings;
+    if (m_encoder) {
+        qCWarning(PIPEWIRERECORD_LOGGING) << "Changing encoder settings after encoding has started is not supported";
+    }
+}
+
 void PipeWireProduce::setColorRange(PipeWireBaseEncodedStream::ColorRange colorRange)
 {
     m_colorRange = colorRange;
@@ -721,8 +753,11 @@ void PipeWireProduce::processFrame(const PipeWireFrame &frame)
             return;
         }
 
-        auto frameTime = 1000.0 / (m_maxFramerate.numerator / m_maxFramerate.denominator);
-        if ((pts - m_previousPts) < frameTime) {
+        // Ectolens: hold the rate on an even grid with a millisecond of slack.
+        // Frame times are whole milliseconds, so at 60 fps frames arrive 16 or
+        // 17 ms apart; requiring a full 16.67 ms since the last frame dropped
+        // every 16 ms one and recorded 60 fps sources at about 40.
+        if (pts < m_nextFrameDue - 1.0) {
             return;
         }
     }
@@ -736,6 +771,7 @@ void PipeWireProduce::processFrame(const PipeWireFrame &frame)
 
     if (m_pendingFilterFrames + 1 > m_maxPendingFrames) {
         qCWarning(PIPEWIRERECORD_LOGGING) << "Filter queue is full, dropping frame" << pts;
+        frameDropped();
         // Frames have backed up to the limit without the encoder ever producing a
         // single packet: it is not draining (e.g. a hardware encoder that cannot map
         // its frames). Report it so consumers can fall back instead of showing nothing.
@@ -751,6 +787,12 @@ void PipeWireProduce::processFrame(const PipeWireFrame &frame)
     }
 
     m_pendingFilterFrames++;
+    {
+        const double frameTime = 1000.0 * m_maxFramerate.denominator / std::max<quint32>(m_maxFramerate.numerator, 1);
+        // On the grid, the next frame is due one frame later; after a gap
+        // (a still screen, a pause), start the grid again from this frame.
+        m_nextFrameDue = (m_previousPts >= 0 && pts <= m_nextFrameDue + frameTime) ? m_nextFrameDue + frameTime : pts + frameTime;
+    }
     m_previousPts = pts;
 
     m_passthroughCondition.notify_all();
@@ -814,6 +856,25 @@ std::unique_ptr<Encoder> PipeWireProduce::makeEncoder()
     }
 
     auto size = m_stream->size();
+
+    // Ectolens: an encoder chosen by name wins over the type-based search below,
+    // so a chosen x264 is never swapped for VA-API behind the person's back.
+    if (!m_encoderSettings.encoderName.isEmpty()) {
+        const QString &name = m_encoderSettings.encoderName;
+        if (name == u"libx264") {
+            auto encoder = std::make_unique<LibX264Encoder>(Encoder::H264Profile::High, this);
+            if (setupEncoder(encoder.get(), size)) {
+                return encoder;
+            }
+        } else {
+            auto encoder = std::make_unique<NamedEncoder>(name, this);
+            if (setupEncoder(encoder.get(), size)) {
+                return encoder;
+            }
+        }
+        qCWarning(PIPEWIRERECORD_LOGGING) << "The chosen encoder" << name << "could not be opened";
+        return nullptr;
+    }
 
     switch (m_encoderType) {
     case PipeWireBaseEncodedStream::H264Baseline:
@@ -891,6 +952,7 @@ bool PipeWireProduce::setupEncoder(Encoder *encoder, const QSize &size)
     encoder->setQuality(m_quality);
     encoder->setEncodingPreference(m_encodingPreference);
     encoder->setColorRange(m_colorRange);
+    encoder->setEncoderSettings(m_encoderSettings);
     return encoder->initialize(size);
 }
 

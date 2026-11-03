@@ -112,6 +112,7 @@ std::pair<int, int> Encoder::encodeFrame(int maximumFrames)
             queued++;
         } else {
             qCWarning(PIPEWIRERECORD_LOGGING) << "Encode queue is full, discarding filtered frame" << frame->pts;
+            m_produce->frameDropped();
         }
         av_frame_unref(frame);
     }
@@ -189,6 +190,11 @@ void Encoder::setEncodingPreference(PipeWireBaseEncodedStream::EncodingPreferenc
 void Encoder::setColorRange(PipeWireBaseEncodedStream::ColorRange colorRange)
 {
     m_colorRange = colorRange;
+}
+
+void Encoder::setEncoderSettings(const PipeWireBaseEncodedStream::EncoderSettings &settings)
+{
+    m_settings = settings;
 }
 
 AVDictionary *Encoder::buildEncodingOptions()

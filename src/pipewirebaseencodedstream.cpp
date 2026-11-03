@@ -5,6 +5,11 @@
 */
 
 #include "pipewirebaseencodedstream.h"
+#include "namedencoder_p.h"
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+}
 
 #include <logging_libav.h>
 #include <logging_record.h>
@@ -35,6 +40,8 @@ struct PipeWireEncodedStreamPrivate {
     PipeWireBaseEncodedStream::EncodingPreference m_encodingPreference;
     PipeWireBaseEncodedStream::State m_state = PipeWireBaseEncodedStream::Idle;
     PipeWireBaseEncodedStream::ColorRange m_colorRange = PipeWireBaseEncodedStream::ColorRange::Limited;
+    PipeWireBaseEncodedStream::EncoderSettings m_encoderSettings;
+    int m_droppedFrames = 0;
 
     std::unique_ptr<QThread> m_produceThread;
     std::unique_ptr<PipeWireProduce> m_produce;
@@ -218,6 +225,7 @@ void PipeWireBaseEncodedStream::start()
     d->m_produce->setMaxPendingFrames(d->m_maxPendingFrames);
     d->m_produce->setEncodingPreference(d->m_encodingPreference);
     d->m_produce->setColorRange(d->m_colorRange);
+    d->m_produce->setEncoderSettings(d->m_encoderSettings);
     d->m_produce->setRequestedSize(d->m_requestedSize);
     d->m_produce->moveToThread(d->m_produceThread.get());
     d->m_produceThread->start();
@@ -235,6 +243,13 @@ void PipeWireBaseEncodedStream::start()
         Q_EMIT activeChanged(false);
         d->m_state = Idle;
         Q_EMIT stateChanged();
+    });
+
+    d->m_droppedFrames = 0;
+    Q_EMIT droppedFramesChanged();
+    connect(d->m_produce.get(), &PipeWireProduce::droppedFramesChanged, this, [this](int count) {
+        d->m_droppedFrames = count;
+        Q_EMIT droppedFramesChanged();
     });
 
     connect(d->m_produce.get(), &PipeWireProduce::encodingError, this, [this](const QString &message) {
@@ -382,6 +397,52 @@ void PipeWireBaseEncodedStream::setColorRange(ColorRange colorRange)
     if (d->m_produce) {
         d->m_produce->setColorRange(d->m_colorRange);
     }
+}
+
+void PipeWireBaseEncodedStream::setEncoderSettings(const EncoderSettings &settings)
+{
+    d->m_encoderSettings = settings;
+    if (d->m_produce) {
+        d->m_produce->setEncoderSettings(d->m_encoderSettings);
+    }
+}
+
+PipeWireBaseEncodedStream::EncoderSettings PipeWireBaseEncodedStream::encoderSettings() const
+{
+    return d->m_encoderSettings;
+}
+
+int PipeWireBaseEncodedStream::droppedFrames() const
+{
+    return d->m_droppedFrames;
+}
+
+QStringList PipeWireBaseEncodedStream::availableEncoderNames(bool includeHardware)
+{
+    QStringList found;
+    for (const QString &name : NamedEncoder::knownEncoders()) {
+        if (!includeHardware && name.endsWith(u"_nvenc")) {
+            continue; // never opened, so the graphics card is not touched
+        }
+        const AVCodec *codec = avcodec_find_encoder_by_name(name.toUtf8().constData());
+        if (!codec) {
+            continue;
+        }
+        AVCodecContext *context = avcodec_alloc_context3(codec);
+        if (!context) {
+            continue;
+        }
+        context->width = 256;
+        context->height = 256;
+        context->pix_fmt = AV_PIX_FMT_YUV420P;
+        context->time_base = AVRational{1, 60};
+        context->framerate = AVRational{60, 1};
+        if (avcodec_open2(context, codec, nullptr) == 0) {
+            found << name;
+        }
+        avcodec_free_context(&context);
+    }
+    return found;
 }
 
 PipeWireBaseEncodedStream::EncodingPreference PipeWireBaseEncodedStream::encodingPreference()
