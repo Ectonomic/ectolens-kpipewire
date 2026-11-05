@@ -23,11 +23,12 @@ public:
                           uint fd,
                           const Fraction &framerate,
                           const QString &output,
-                          AudioSources audioSources);
+                          AudioSources audioSources,
+                          bool separateAudioTracks = false);
 
     void processFrame(const PipeWireFrame &frame) override;
     void processPacket(AVPacket *packet) override;
-    void processAudioPacket(AVPacket *packet) override;
+    void processAudioPacket(AVPacket *packet, int track) override;
     int64_t framePts(const std::optional<std::chrono::nanoseconds> &presentationTimestamp) override;
     void aboutToEncode(PipeWireFrame &frame) override;
     bool setupFormat() override;
@@ -38,7 +39,8 @@ private:
     AVFormatContext *m_avFormatContext = nullptr;
     // Ectolens: only a file whose header was written can take a trailer
     bool m_headerWritten = false;
-    AVStream *m_audioStream = nullptr;
+    // Ectolens: one output stream per sound track, in m_audioTracks' order
+    std::vector<AVStream *> m_audioTrackStreams;
     PipeWireFrame m_frameWithoutMetadataCursor;
 };
 
@@ -46,4 +48,5 @@ struct PipeWireRecordPrivate {
     QString m_output;
     bool m_recordSystemAudio = false;
     bool m_recordMicrophone = false;
+    bool m_separateAudioTracks = false;
 };

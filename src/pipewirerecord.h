@@ -36,6 +36,11 @@ public:
     /// Whether to also record the default audio input, e.g. a microphone
     bool recordMicrophone() const;
     void setRecordMicrophone(bool recordMicrophone);
+    /// Ectolens: with both sound sources on, whether the file holds them on tracks of their
+    /// own (after a first track that mixes them, so every player plays both) instead of
+    /// only mixed into one track
+    bool separateAudioTracks() const;
+    void setSeparateAudioTracks(bool separate);
 
     // Only for compatibility with 5.27
     KPIPEWIRE_DEPRECATED QString currentExtension() const

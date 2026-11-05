@@ -142,7 +142,7 @@ int AudioEncoder::receivePacket()
 
         received++;
 
-        m_produce->processAudioPacket(packet);
+        m_produce->processAudioPacket(packet, m_track);
         av_packet_unref(packet);
     }
 

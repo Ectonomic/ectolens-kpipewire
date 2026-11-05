@@ -96,9 +96,11 @@ public:
     }
 
     virtual void processPacket(AVPacket *packet) = 0;
-    virtual void processAudioPacket(AVPacket *packet)
+    // Ectolens: `track` is the sound track the packet belongs to (m_audioTracks' index)
+    virtual void processAudioPacket(AVPacket *packet, int track)
     {
         Q_UNUSED(packet);
+        Q_UNUSED(track);
     }
     virtual bool setupFormat()
     {
@@ -182,7 +184,19 @@ public:
     QSize m_encoderSize;
 
     AudioSources m_audioSources;
-    std::unique_ptr<AudioEncoder> m_audioEncoder;
+    // Ectolens: one or more sound tracks. A track's encoder mixes the audio inputs it lists
+    // (indices in the order initializeAudioStreams() opens them: system sound first, then
+    // the microphone); the encoder's own input i is sources[i]. One track mixes every input,
+    // as upstream did; separate tracks add one track per input after that mix.
+    struct AudioTrack {
+        std::unique_ptr<AudioEncoder> encoder;
+        std::vector<int> sources;
+    };
+    std::vector<AudioTrack> m_audioTracks;
+    bool m_separateAudioTracks = false;
+    // hands an input's frame to every track that takes it; true if one took it
+    bool filterAudioInput(int input, AVFrame *frame);
+    void endAudioInput(int input);
     std::vector<std::unique_ptr<PipeWireAudioSourceStream>> m_audioStreams;
 
     struct AudioInputState {

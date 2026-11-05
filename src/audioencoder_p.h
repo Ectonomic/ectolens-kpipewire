@@ -101,6 +101,14 @@ public:
      */
     void setQuality(std::optional<quint8> quality);
 
+    /**
+     * Ectolens: the sound track this encoder's packets belong to.
+     */
+    void setTrack(int track)
+    {
+        m_track = track;
+    }
+
 protected:
     /**
      * Create a filter graph that mixes the inputs and converts to the encoder's format.
@@ -115,6 +123,7 @@ protected:
     int64_t qualityToBitrate(const std::optional<quint8> &quality) const;
 
     PipeWireProduce *m_produce;
+    int m_track = 0;
 
     AVCodecContext *m_avCodecContext = nullptr;
     std::mutex m_avCodecMutex;

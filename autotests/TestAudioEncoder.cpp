@@ -32,7 +32,7 @@ public:
     {
     }
 
-    void processAudioPacket(AVPacket *packet) override
+    void processAudioPacket(AVPacket *packet, [[maybe_unused]] int track) override
     {
         packets.append(std::make_pair(packet->pts, packet->duration));
     }

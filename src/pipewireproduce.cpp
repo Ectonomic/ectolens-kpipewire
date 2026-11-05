@@ -231,7 +231,7 @@ void PipeWireProduce::setupStream()
         return;
     }
 
-    if (m_audioEncoder) {
+    if (!m_audioTracks.empty()) {
         initializeAudioStreams();
     }
 
@@ -321,9 +321,9 @@ void PipeWireProduce::startThreads()
                 m_anyFrameEncoded = true;
             }
 
-            if (m_audioEncoder) {
-                m_audioEncoder->encodeFrame(std::numeric_limits<int>::max());
-                m_audioEncoder->receivePacket();
+            for (auto &track : m_audioTracks) {
+                track.encoder->encodeFrame(std::numeric_limits<int>::max());
+                track.encoder->receivePacket();
             }
 
             // Notify the produce thread that the count of processed frames has
@@ -411,6 +411,43 @@ void PipeWireProduce::initializeAudioStreams()
     m_audioPadTimer->start();
 }
 
+bool PipeWireProduce::filterAudioInput(int input, AVFrame *frame)
+{
+    // The filter graph takes a frame's data over, so every track but the last that takes
+    // this input gets its own reference to it.
+    std::vector<std::pair<AudioEncoder *, int>> takers;
+    for (auto &track : m_audioTracks) {
+        for (size_t i = 0; i < track.sources.size(); ++i) {
+            if (track.sources[i] == input) {
+                takers.emplace_back(track.encoder.get(), int(i));
+            }
+        }
+    }
+    bool taken = false;
+    for (size_t t = 0; t < takers.size(); ++t) {
+        AVFrame *own = t + 1 < takers.size() ? av_frame_clone(frame) : frame;
+        if (!own) {
+            qFatal("Failed to allocate memory");
+        }
+        taken |= takers[t].first->filterFrame(takers[t].second, own);
+        if (own != frame) {
+            av_frame_free(&own);
+        }
+    }
+    return taken;
+}
+
+void PipeWireProduce::endAudioInput(int input)
+{
+    for (auto &track : m_audioTracks) {
+        for (size_t i = 0; i < track.sources.size(); ++i) {
+            if (track.sources[i] == input) {
+                track.encoder->endInput(int(i));
+            }
+        }
+    }
+}
+
 void PipeWireProduce::handleAudioStreamStopped(int input)
 {
     auto &state = m_audioInputStates[input];
@@ -422,7 +459,7 @@ void PipeWireProduce::handleAudioStreamStopped(int input)
     padAudioInputToTarget(input, std::chrono::steady_clock::now());
     state.ended = true;
     // Close the encoder input so amix does not wait for data on it
-    m_audioEncoder->endInput(input);
+    endAudioInput(input);
     m_outputCondition.notify_all();
 }
 
@@ -509,7 +546,7 @@ void PipeWireProduce::processAudioFrame(int input, const PipeWireAudioFrame &fra
     // The frame data is only valid for the duration of the signal emission
     std::memcpy(avFrame->data[0], data, sampleCount * frame.channels * sizeof(float));
 
-    if (m_audioEncoder->filterFrame(input, avFrame)) {
+    if (filterAudioInput(input, avFrame)) {
         state.sampleCount += sampleCount;
     }
     av_frame_free(&avFrame);
@@ -542,7 +579,7 @@ void PipeWireProduce::pushSilence(int input, int64_t sampleCount, quint32 channe
         }
         av_samples_set_silence(avFrame->data, 0, chunk, channels, AV_SAMPLE_FMT_FLT);
 
-        if (!m_audioEncoder->filterFrame(input, avFrame)) {
+        if (!filterAudioInput(input, avFrame)) {
             av_frame_free(&avFrame);
             return;
         }
@@ -664,7 +701,7 @@ void PipeWireProduce::destroy()
 
     stopThreads();
 
-    if (m_audioEncoder) {
+    if (!m_audioTracks.empty()) {
         if (m_audioPadTimer) {
             m_audioPadTimer->stop();
         }
@@ -682,21 +719,23 @@ void PipeWireProduce::destroy()
                 // at the last delivered buffer, keeping it as long as the
                 // video track even when the source went quiet before stop.
                 padAudioInputToTarget(int(i), stopTime);
-                m_audioEncoder->endInput(int(i));
+                endAudioInput(int(i));
                 m_audioInputStates[i].ended = true;
             }
         }
         // Alternate between encoding and receiving until the filter graph is
         // empty, then flush the codec's delayed samples.
-        for (;;) {
-            auto [filtered, queued] = m_audioEncoder->encodeFrame(std::numeric_limits<int>::max());
-            auto received = m_audioEncoder->receivePacket();
-            if (filtered == 0 && queued == 0 && received == 0) {
-                break;
+        for (auto &track : m_audioTracks) {
+            for (;;) {
+                auto [filtered, queued] = track.encoder->encodeFrame(std::numeric_limits<int>::max());
+                auto received = track.encoder->receivePacket();
+                if (filtered == 0 && queued == 0 && received == 0) {
+                    break;
+                }
             }
+            track.encoder->finish();
+            while (track.encoder->receivePacket() > 0) { }
         }
-        m_audioEncoder->finish();
-        while (m_audioEncoder->receivePacket() > 0) { }
     }
     m_audioStreams.clear();
 
@@ -714,8 +753,8 @@ void PipeWireProduce::setQuality(const std::optional<quint8> &quality)
     if (m_encoder) {
         m_encoder->setQuality(quality);
     }
-    if (m_audioEncoder) {
-        m_audioEncoder->setQuality(quality);
+    for (auto &track : m_audioTracks) {
+        track.encoder->setQuality(quality);
     }
 }
 
