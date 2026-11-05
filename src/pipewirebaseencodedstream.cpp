@@ -417,6 +417,11 @@ int PipeWireBaseEncodedStream::droppedFrames() const
     return d->m_droppedFrames;
 }
 
+bool PipeWireBaseEncodedStream::hasEncoder(const QString &name)
+{
+    return !name.isEmpty() && avcodec_find_encoder_by_name(name.toUtf8().constData());
+}
+
 QStringList PipeWireBaseEncodedStream::availableEncoderNames(bool includeHardware)
 {
     QStringList found;

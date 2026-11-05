@@ -224,6 +224,9 @@ public:
     /// found by opening each one on a small test size. Hardware encoders are tried
     /// too, so this touches the graphics card.
     static QStringList availableEncoderNames(bool includeHardware = true);
+    /// Ectolens: whether this computer's FFmpeg has the encoder at all (looked up by
+    /// name, never opened, so no graphics card is touched).
+    static bool hasEncoder(const QString &name);
 
     /// Ectolens: how fast this computer encodes with these settings, measured
     /// on a moving test picture of the given size (no screen involved).

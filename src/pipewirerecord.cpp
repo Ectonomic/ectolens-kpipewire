@@ -23,6 +23,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/opt.h>
 #include <libavutil/timestamp.h>
 }
 
@@ -223,16 +224,26 @@ bool PipeWireRecordProduce::setupFormat()
     }
     // Ectolens: MP4 and MOV are written in fragments while recording, so a crash
     // still leaves a playable file, and FFmpeg turns them into a normal file when
-    // the recording finishes (the method OBS calls Hybrid MP4).
+    // the recording finishes (the method OBS calls Hybrid MP4). FFmpeg added that
+    // in 7.1; an older one (Ubuntu 24.04's 6.1, under KDE neon) refuses the flag and
+    // nothing gets recorded, so there the file is fragmented the classic way, and stays
+    // fragmented when the recording ends. Its index waits for the first fragment
+    // (delay_moov, not empty_moov): the encoders send H.264's parameter sets in the
+    // stream, and an index written before the first frame had none, so nothing could
+    // play the file. A crash in the first fragment (one keyframe interval) loses it.
     const QByteArray formatName = m_avFormatContext->oformat->name;
     if (formatName.contains("mp4") || formatName.contains("mov")) {
-        av_dict_set(&options, "movflags", "+hybrid_fragmented", 0);
+        const AVClass *muxerClass = m_avFormatContext->oformat->priv_class;
+        const bool hybrid = muxerClass && av_opt_find(&muxerClass, "hybrid_fragmented", "movflags", 0, AV_OPT_SEARCH_FAKE_OBJ);
+        av_dict_set(&options, "movflags", hybrid ? "+hybrid_fragmented" : "+frag_keyframe+delay_moov+default_base_moof", 0);
     }
     ret = avformat_write_header(m_avFormatContext, &options);
+    av_dict_free(&options);
     if (ret < 0) {
         qCWarning(PIPEWIRERECORD_LOGGING) << "Error occurred when writing header:" << av_err2str(ret);
         return false;
     }
+    m_headerWritten = true;
 
     return true;
 }
@@ -310,12 +321,22 @@ int64_t PipeWireRecordProduce::framePts(const std::optional<std::chrono::nanosec
 void PipeWireRecordProduce::cleanup()
 {
     if (m_avFormatContext) {
-        if (auto result = av_write_trailer(m_avFormatContext); result < 0) {
-            qCWarning(PIPEWIRERECORD_LOGGING) << "Could not write trailer";
+        // Ectolens: a setup that failed before the header (the file couldn't be opened,
+        // or the muxer refused an option) left no header, and writing a trailer then
+        // crashed, as in upstream KPipeWire. The unusable file goes too.
+        if (m_headerWritten) {
+            if (auto result = av_write_trailer(m_avFormatContext); result < 0) {
+                qCWarning(PIPEWIRERECORD_LOGGING) << "Could not write trailer";
+            }
         }
 
+        const bool opened = m_avFormatContext->pb;
         avio_closep(&m_avFormatContext->pb);
         avformat_free_context(m_avFormatContext);
+        m_avFormatContext = nullptr;
+        if (!m_headerWritten && opened) {
+            QFile::remove(m_output);
+        }
     }
 }
 

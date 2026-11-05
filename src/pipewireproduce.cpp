@@ -881,6 +881,9 @@ std::unique_ptr<Encoder> PipeWireProduce::makeEncoder()
 
     // Ectolens: an encoder chosen by name wins over the type-based search below,
     // so a chosen x264 is never swapped for VA-API behind the person's back.
+    // When the chosen one can't be opened (an FFmpeg built without x264, as Fedora's
+    // and openSUSE's own are, or a graphics card's encoder on a computer without the
+    // card), the search below still records, as Spectacle would, instead of nothing.
     if (!m_encoderSettings.encoderName.isEmpty()) {
         const QString &name = m_encoderSettings.encoderName;
         if (name == u"libx264") {
@@ -894,8 +897,11 @@ std::unique_ptr<Encoder> PipeWireProduce::makeEncoder()
                 return encoder;
             }
         }
-        qCWarning(PIPEWIRERECORD_LOGGING) << "The chosen encoder" << name << "could not be opened";
-        return nullptr;
+        qCWarning(PIPEWIRERECORD_LOGGING) << "The chosen encoder" << name << "could not be opened; using this computer's own choice";
+        // what was set for that encoder alone (its speed names and own options, such as
+        // NVENC's "p5", its quality scale) would make x264 in the search below refuse to
+        // open, or record at another encoder's numbers: the search's encoder uses its own
+        m_encoderSettings = {};
     }
 
     switch (m_encoderType) {

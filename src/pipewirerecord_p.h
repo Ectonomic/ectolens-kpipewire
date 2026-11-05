@@ -36,6 +36,8 @@ public:
 private:
     const QString m_output;
     AVFormatContext *m_avFormatContext = nullptr;
+    // Ectolens: only a file whose header was written can take a trailer
+    bool m_headerWritten = false;
     AVStream *m_audioStream = nullptr;
     PipeWireFrame m_frameWithoutMetadataCursor;
 };
