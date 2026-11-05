@@ -66,6 +66,13 @@ private Q_SLOTS:
 
 void MediaMonitorTest::test_MediaMonitor()
 {
+    // Ectolens: this test starts PipeWire, WirePlumber and pipewire-pulse in the session it runs
+    // in, beside any already there, and plays a sound on the default output. On a desktop that
+    // second session manager takes the sound devices from the person's own (2026-11-05: a USB
+    // speaker was lost until WirePlumber restarted). Only KDE's CI, a throwaway session, runs it.
+    if (!qEnvironmentVariableIsSet("KDECI_BUILD")) {
+        QSKIP("starts its own PipeWire and plays a sound: only in KDE's CI (KDECI_BUILD)");
+    }
     QProcess pipewire;
     QProcess pipewire_pulse;
     QProcess wireplumber;
@@ -90,7 +97,8 @@ void MediaMonitorTest::test_MediaMonitor()
     QProcess pidof;
     pidof.start(QStringLiteral("pidof"), {QStringLiteral("pipewire")});
     pidof.waitForFinished();
-    if (QString::fromUtf8(pidof.readAllStandardOutput()).toInt() == 0) {
+    // Ectolens: pidof lists every PipeWire, space-separated; more than one read as none
+    if (QString::fromUtf8(pidof.readAllStandardOutput()).split(u' ', Qt::SkipEmptyParts).value(0).trimmed().toInt() == 0) {
         pipewire.start(QStringLiteral("pipewire"));
         QVERIFY2(pipewire.waitForStarted(), pipewire.readAllStandardError().constData());
         wireplumber.start(QStringLiteral("wireplumber"));
