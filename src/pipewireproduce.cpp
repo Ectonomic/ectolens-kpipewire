@@ -274,6 +274,7 @@ void PipeWireProduce::discardFrameState()
 {
     // The queues contain work for the old encoder, which was just destroyed.
     m_lastDroppedFrame = {};
+    m_lastEncodedFrame = {};
     m_pendingFilterFrames = 0;
     m_pendingEncodeFrames = 0;
 }
@@ -588,6 +589,26 @@ void PipeWireProduce::deactivate()
         m_audioPadTimer->stop();
     }
 
+    // Ectolens: the compositor sends a frame only when the picture changes, so a still window gave a
+    // file one frame long however long it was recorded (2026-11-03, the agent run's 2.5 s recording
+    // of a still terminal). The last frame goes in again up to the stop time (or the pause's start,
+    // whose time is cut), so the file lasts until Stop; players hold each frame until the next.
+    // Repeating the last frame when none comes is how screen recorders handle damage-only
+    // compositors (moq-video's PipeWire capture re-emits it on a timer).
+    // It goes in four times, one frame apart, ending at the stop: an encoder that reorders frames
+    // (H.264's B-frames) stamps each packet's decode time with a frame two or three places back, and
+    // an MP4's track ends at the last decode time, so a single frame at the stop after a still stretch
+    // left the file ending where the stretch began (the video run's 2.2 s recording read 0.99 s).
+    if (m_encoder && !m_encoderPaused && (m_lastEncodedFrame.dataFrame || m_lastEncodedFrame.dmabuf)) {
+        const auto stopAt = m_pausedAt ? *m_pausedAt : *m_stopTimepoint;
+        const auto frameTime = std::chrono::nanoseconds(qint64(1e9 * m_maxFramerate.denominator / std::max<quint32>(m_maxFramerate.numerator, 1)));
+        for (int k = 3; k >= 0; --k) {
+            auto last = m_lastEncodedFrame;
+            last.presentationTimestamp = std::chrono::duration_cast<std::chrono::nanoseconds>((stopAt - k * frameTime).time_since_epoch());
+            processFrame(last); // one earlier than the last real frame is refused there
+        }
+    }
+
     auto streamState = PW_STREAM_STATE_PAUSED;
     if (m_stream) {
         streamState = m_stream->state();
@@ -787,6 +808,7 @@ void PipeWireProduce::processFrame(const PipeWireFrame &frame)
     }
 
     m_pendingFilterFrames++;
+    m_lastEncodedFrame = frame;
     {
         const double frameTime = 1000.0 * m_maxFramerate.denominator / std::max<quint32>(m_maxFramerate.numerator, 1);
         // On the grid, the next frame is due one frame later; after a gap

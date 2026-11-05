@@ -268,6 +268,8 @@ public:
     std::atomic_bool m_encoderPaused = false;
 
     PipeWireFrame m_lastDroppedFrame;
+    // Ectolens: the last frame sent to the encoder, sent again up to the stop time (deactivate)
+    PipeWireFrame m_lastEncodedFrame;
 
 Q_SIGNALS:
     void producedFrames();
